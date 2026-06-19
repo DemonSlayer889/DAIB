@@ -30,6 +30,9 @@ OPENROUTER_API_KEY = ""
 AUTHORIZED_USERS = {1507727597428146317}
 TARGET_CHANNEL_ID = 1517569331255312607
 
+# TRADE BAN ROLE
+TRADE_BAN_ROLE_ID = 1517643161894125598
+
 BOT_MODE = "normal"
 STEALTH_MODE = False
 FORCED_MESSAGE = None
@@ -236,6 +239,15 @@ def update_user_settings(uid, setting, value):
         user_settings_data[uid] = {}
     user_settings_data[uid][setting] = value
     save_user_settings()
+
+def is_trade_banned(member):
+    """Check if a member has the trade ban role"""
+    if not member:
+        return False
+    ban_role = member.guild.get_role(TRADE_BAN_ROLE_ID)
+    if ban_role and ban_role in member.roles:
+        return True
+    return False
 
 # =========================
 # MEMORY SYSTEM
@@ -457,6 +469,8 @@ def start_bot():
 
                     initiator = guild.get_member(trade_data["initiator_id"])
                     target_member = guild.get_member(target_id)
+                    take_role = guild.get_role(trade_data["take_role_id"])
+                    give_role = guild.get_role(trade_data["give_role_id"])
 
                     if content_lower == "!decline":
                         await message.reply("🛑 You declined the trade.")
@@ -469,56 +483,26 @@ def start_bot():
                         del active_trades[target_id]
                         return
 
-                    if not initiator or not target_member:
+                    if not initiator or not target_member or not take_role or not give_role:
                         await message.reply("❌ Error: Trade data invalid.")
                         del active_trades[target_id]
                         return
 
                     try:
-                        # Handle role transfers
-                        take_roles = trade_data.get("take_roles", [])
-                        give_roles = trade_data.get("give_roles", [])
+                        await target_member.remove_roles(take_role, reason="Trade executed.")
+                        await target_member.add_roles(give_role, reason="Trade executed.")
                         
-                        for role_id in take_roles:
-                            role = guild.get_role(role_id)
-                            if role:
-                                await target_member.remove_roles(role, reason="Trade executed.")
-                                await initiator.add_roles(role, reason="Trade executed.")
-                        
-                        for role_id in give_roles:
-                            role = guild.get_role(role_id)
-                            if role:
-                                await initiator.remove_roles(role, reason="Trade executed.")
-                                await target_member.add_roles(role, reason="Trade executed.")
-                        
-                        # Handle coin transfers
-                        take_coins = trade_data.get("take_coins", 0)
-                        give_coins = trade_data.get("give_coins", 0)
-                        
-                        if take_coins > 0:
-                            add_coins(target_id, -take_coins)
-                            add_coins(trade_data["initiator_id"], take_coins)
-                        
-                        if give_coins > 0:
-                            add_coins(trade_data["initiator_id"], -give_coins)
-                            add_coins(target_id, give_coins)
+                        await initiator.remove_roles(give_role, reason="Trade executed.")
+                        await initiator.add_roles(take_role, reason="Trade executed.")
 
-                        take_desc = f"{len(take_roles)} role(s)" if take_roles else ""
-                        if take_coins > 0:
-                            take_desc += f" + {take_coins} coins" if take_desc else f"{take_coins} coins"
-                        
-                        give_desc = f"{len(give_roles)} role(s)" if give_roles else ""
-                        if give_coins > 0:
-                            give_desc += f" + {give_coins} coins" if give_desc else f"{give_coins} coins"
-                        
-                        await message.reply(f"✅ Trade complete! You received {take_desc}!")
+                        await message.reply(f"✅ Trade complete! You got **{take_role.name}**!")
                         
                         try:
-                            await initiator.send(f"🎉 Trade approved! You received {give_desc}!")
+                            await initiator.send(f"🎉 Trade approved! You got **{take_role.name}**!")
                         except: pass
                         
                         if origin_channel:
-                            await origin_channel.send(f"🤝 **Trade Complete!** <@{initiator.id}> and <@{target_member.id}> completed a trade!")
+                            await origin_channel.send(f"🤝 **Trade Complete!** <@{initiator.id}> and <@{target_member.id}> swapped roles!")
                     
                     except discord.Forbidden:
                         await message.reply("❌ Permission Error: I can't modify roles.")
@@ -528,38 +512,6 @@ def start_bot():
                     del active_trades[target_id]
                 else:
                     await message.reply("❌ No active trades.")
-            
-            elif content_lower == "!settings":
-                await message.reply(
-                    "⚙️ **YOUR SETTINGS**\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    "**Trading Settings:**\n"
-                    "• `!set trading allow` - Allow anyone to trade with you\n"
-                    "• `!set trading disable` - Disable trading with you\n"
-                    "• `!set trading friends_only` - Only friends can trade with you\n\n"
-                    "**Inventory Privacy:**\n"
-                    "• `!set inventory public` - Show your inventory and role codes\n"
-                    "• `!set inventory anonymous` - Show inventory but hide role codes\n"
-                    "• `!set inventory hidden` - Hide inventory from others\n"
-                )
-            
-            elif content_lower.startswith("!set "):
-                parts = content[5:].strip().split()
-                if len(parts) >= 2:
-                    setting_type = parts[0].lower()
-                    setting_value = parts[1].lower()
-                    
-                    if setting_type == "trading" and setting_value in ["allow", "disable", "friends_only"]:
-                        update_user_settings(uid, "trading", setting_value)
-                        await message.reply(f"✅ Trading set to: **{setting_value}**")
-                    elif setting_type == "inventory" and setting_value in ["public", "anonymous", "hidden"]:
-                        update_user_settings(uid, "inventory", setting_value)
-                        await message.reply(f"✅ Inventory privacy set to: **{setting_value}**")
-                    else:
-                        await message.reply("❌ Invalid setting or value.")
-                else:
-                    await message.reply("❌ Usage: `!set <trading|inventory> <value>`")
-            
             return
 
         # ===================================================
@@ -571,93 +523,6 @@ def start_bot():
         LAST_CHANNEL = message.channel
         if hasattr(message.author, 'voice'):
             LAST_USER_VOICE_STATE = message.author.voice
-
-        # ===================================================
-        # SETTINGS COMMAND
-        # ===================================================
-        
-        if content_lower == "!settings":
-            try:
-                await message.author.send(
-                    "⚙️ **YOUR SETTINGS**\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    "**Trading Settings:**\n"
-                    "• `!set trading allow` - Allow anyone to trade with you\n"
-                    "• `!set trading disable` - Disable trading with you\n"
-                    "• `!set trading friends_only` - Only friends can trade with you\n\n"
-                    "**Inventory Privacy:**\n"
-                    "• `!set inventory public` - Show your inventory and role codes\n"
-                    "• `!set inventory anonymous` - Show inventory but hide role codes\n"
-                    "• `!set inventory hidden` - Hide inventory from others\n"
-                )
-                await message.reply("✅ Check your DMs!")
-            except discord.Forbidden:
-                await message.reply("❌ Cannot send DM. Enable DMs from server members.")
-            return
-
-        # ===================================================
-        # INVENTORY VIEWING COMMAND
-        # ===================================================
-        
-        if content_lower == "!inv" or (content_lower.startswith("!inv ") and not message.mentions):
-            # View own inventory
-            if uid not in user_inventory or not user_inventory[uid]:
-                await message.reply("❌ Your inventory is empty.")
-                return
-
-            coins = get_coins(uid)
-            chat_limit = user_limits.get(uid, DEFAULT_LIMIT)
-
-            roles_str = ""
-            for code, info in user_inventory[uid].items():
-                roles_str += f"• **[{code}]** {info['role_name']}\n"
-
-            inventory_msg = (
-                f"📦 **{message.author.display_name}'S INVENTORY**\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"**Roles:**\n{roles_str}\n"
-                f"**💰 Coins:** {coins}\n"
-                f"**💬 Chat Limit:** {chat_limit}\n"
-            )
-            await message.reply(inventory_msg)
-            return
-        
-        if content_lower.startswith("!inv ") and message.mentions:
-            # View someone else's inventory
-            target_user = message.mentions[0]
-            target_uid = target_user.id
-
-            target_settings = get_user_settings(target_uid)
-            inv_privacy = target_settings.get("inventory", "public")
-
-            if inv_privacy == "hidden":
-                await message.reply(f"🔒 **{target_user.display_name}** has hidden their inventory.")
-                return
-
-            if target_uid not in user_inventory or not user_inventory[target_uid]:
-                await message.reply(f"❌ **{target_user.display_name}** has an empty inventory.")
-                return
-
-            coins = get_coins(target_uid)
-            chat_limit = user_limits.get(target_uid, DEFAULT_LIMIT)
-
-            roles_str = ""
-            if inv_privacy == "public":
-                for code, info in user_inventory[target_uid].items():
-                    roles_str += f"• **[{code}]** {info['role_name']}\n"
-            else:  # anonymous
-                for code, info in user_inventory[target_uid].items():
-                    roles_str += f"• {info['role_name']}\n"
-
-            inventory_msg = (
-                f"📦 **{target_user.display_name}'S INVENTORY**\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"**Roles:**\n{roles_str}\n"
-                f"**💰 Coins:** {coins}\n"
-                f"**💬 Chat Limit:** {chat_limit}\n"
-            )
-            await message.reply(inventory_msg)
-            return
 
         # ===================================================
         # ROLE SHOP SYSTEM
@@ -722,70 +587,68 @@ def start_bot():
                 await message.reply(f"❌ Error: {str(e)}")
             return
 
-        # ===================================================
-        # SELLABLE ROLES SYSTEM
-        # ===================================================
-
-        if content_lower == "!sellroles":
-            if not sellable_roles:
-                await message.reply("❌ No sellable roles available.")
+        if content_lower == "!inventory":
+            if uid not in user_inventory or not user_inventory[uid]:
+                await message.reply("❌ Your inventory is empty.")
                 return
 
-            user_sellable = []
-            for code, info in sellable_roles.items():
-                role_id = info["role_id"]
-                member = message.guild.get_member(uid)
-                if member:
-                    role = message.guild.get_role(role_id)
-                    if role and role in member.roles:
-                        user_sellable.append((code, info))
+            tradeable_roles_list = []
+            sellable_roles_list = []
 
-            if not user_sellable:
-                await message.reply("❌ You don't have any sellable roles.")
-                return
+            for code, info in user_inventory[uid].items():
+                role_str = f"**[{code}]** {info['role_name']} - **{info['price']} Coins**"
+                if info.get("tradeable", False):
+                    tradeable_roles_list.append(role_str)
+                if info.get("sellable", False):
+                    sellable_roles_list.append(role_str + f" (Sell for: **{info['price'] // 2} Coins**)")
 
-            roles_str = "\n".join([f"**[{code}]** {info['role_name']} - Sell for **{info['sell_price']} Coins**" for code, info in user_sellable])
-            await message.reply(
-                f"💰 **SELLABLE ROLES**\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"{roles_str}\n\n"
-                f"*Type `!sell <code>` to sell a role*"
-            )
+            inventory_text = "📦 **YOUR INVENTORY**\n━━━━━━━━━━━━━━━━━━━━━━\n"
+
+            if tradeable_roles_list:
+                inventory_text += f"**🔄 TRADEABLE ROLES:**\n" + "\n".join(tradeable_roles_list) + "\n\n"
+
+            if sellable_roles_list:
+                inventory_text += f"**💰 SELLABLE ROLES:**\n" + "\n".join(sellable_roles_list) + "\n"
+
+            if not tradeable_roles_list and not sellable_roles_list:
+                inventory_text += "No tradeable or sellable roles.\n"
+
+            inventory_text += f"\n*Use `!trade @user`, `!sell <code>`*"
+            await message.reply(inventory_text)
             return
 
         if content_lower.startswith("!sell "):
             code = content[6:].strip()
             
-            if code not in sellable_roles:
-                await message.reply(f"❌ Sellable role code `{code}` not found.")
+            if uid not in user_inventory or code not in user_inventory[uid]:
+                await message.reply(f"❌ You don't own role `{code}`.")
                 return
 
-            role_info = sellable_roles[code]
-            member = message.guild.get_member(uid)
-            role = message.guild.get_role(role_info["role_id"])
-
-            if not member or not role:
-                await message.reply("❌ Error: Could not find role or member.")
-                return
-
-            if role not in member.roles:
-                await message.reply(f"❌ You don't have the role **{role_info['role_name']}**.")
+            role_info = user_inventory[uid][code]
+            if not role_info.get("sellable", False):
+                await message.reply(f"❌ **{role_info['role_name']}** is not sellable.")
                 return
 
             try:
-                await member.remove_roles(role, reason="Sold role")
-                sell_price = role_info["sell_price"]
-                add_coins(uid, sell_price)
-                await message.reply(f"✅ Sold **{role_info['role_name']}** for **{sell_price} Coins**!")
-            except discord.Forbidden:
-                await message.reply("❌ Permission Error: I can't remove roles.")
+                member = message.guild.get_member(uid)
+                role = message.guild.get_role(role_info["role_id"])
+                if member and role:
+                    await member.remove_roles(role, reason="Sold to shop")
+            except:
+                pass
+
+            sell_price = role_info["price"] // 2
+            add_coins(uid, sell_price)
+            del user_inventory[uid][code]
+            save_user_inventory()
+
+            await message.reply(f"✅ Sold **{role_info['role_name']}** for **{sell_price} Coins**!")
             return
 
         # ===================================================
-        # TRADING SYSTEM - MULTI-ROLE / MULTI-COIN
+        # TRADING SYSTEM - Check exact commands FIRST
         # ===================================================
 
-        # Check all trade-related commands BEFORE checking !trade with startswith
         if content_lower == "!tradeready":
             if uid not in pending_takes:
                 await message.reply("❌ Run `!trade @user` first.")
@@ -903,66 +766,6 @@ def start_bot():
                 del active_trades[target_member.id]
             return
 
-        if content_lower.startswith("!trade"):
-            if not message.mentions:
-                await message.reply("⚠️ Usage: `!trade @user`")
-                return
-            
-            target_member = message.mentions[0]
-            if target_member.id == uid:
-                await message.reply("💀 You cannot trade with yourself.")
-                return
-            if target_member.bot:
-                await message.reply("❌ Bots cannot trade.")
-                return
-
-            # Check target's trade settings
-            target_settings = get_user_settings(target_member.id)
-            trading_mode = target_settings.get("trading", "allow")
-            
-            if trading_mode == "disable":
-                await message.reply(f"❌ **{target_member.display_name}** has trading disabled.")
-                return
-
-            # Get tradeable roles the target has
-            target_tradeable_roles = []
-            for code, trade_info in tradeable_roles.items():
-                role = message.guild.get_role(trade_info["role_id"])
-                if role and role in target_member.roles:
-                    target_tradeable_roles.append((code, role, trade_info))
-
-            target_coins = get_coins(target_member.id)
-
-            if not target_tradeable_roles and target_coins == 0:
-                await message.reply(f"❌ **{target_member.display_name}** has nothing to trade.")
-                return
-
-            roles_list_str = ""
-            if target_tradeable_roles:
-                roles_list_str += "**Available Roles:**\n"
-                for code, role, info in target_tradeable_roles:
-                    roles_list_str += f"• `{code}` - {info['role_name']}\n"
-
-            if target_coins > 0:
-                roles_list_str += f"\n**Coins:** {target_coins} available\n"
-
-            pending_takes[uid] = {
-                "target_member": target_member,
-                "guild": message.guild,
-                "tradeable_roles": target_tradeable_roles,
-                "target_coins": target_coins,
-                "take_roles": [],
-                "take_coins": 0
-            }
-            
-            await message.reply(
-                f"**Select what you want from {target_member.display_name}:**\n"
-                f"{roles_list_str}\n"
-                f"*Type `!take <code>` for roles or `!takecoins <amount>` for coins.*\n"
-                f"*When done, type `!tradeready`*"
-            )
-            return
-
         if content_lower.startswith("!take "):
             if uid not in pending_takes:
                 await message.reply("❌ Run `!trade @user` first.")
@@ -1061,6 +864,69 @@ def start_bot():
                 await message.reply(f"✅ Added to offer: {amount} coins")
             except ValueError:
                 await message.reply("❌ Invalid amount.")
+            return
+
+        if content_lower.startswith("!trade"):
+            # Check if user is trade banned
+            member = message.guild.get_member(uid)
+            if is_trade_banned(member):
+                await message.reply("❌ You are banned from trading.")
+                return
+
+            if not message.mentions:
+                await message.reply("⚠️ Usage: `!trade @user`")
+                return
+            
+            target_member = message.mentions[0]
+            if target_member.id == uid:
+                await message.reply("💀 You cannot trade with yourself.")
+                return
+            if target_member.bot:
+                await message.reply("❌ Bots cannot trade.")
+                return
+
+            # Check if target is trade banned
+            if is_trade_banned(target_member):
+                await message.reply(f"❌ **{target_member.display_name}** is banned from trading.")
+                return
+
+            # Get tradeable roles the target has
+            target_tradeable_roles = []
+            for code, trade_info in tradeable_roles.items():
+                role = message.guild.get_role(trade_info["role_id"])
+                if role and role in target_member.roles:
+                    target_tradeable_roles.append((code, role, trade_info))
+
+            target_coins = get_coins(target_member.id)
+
+            if not target_tradeable_roles and target_coins == 0:
+                await message.reply(f"❌ **{target_member.display_name}** has nothing to trade.")
+                return
+
+            roles_list_str = ""
+            if target_tradeable_roles:
+                roles_list_str += "**Available Roles:**\n"
+                for code, role, info in target_tradeable_roles:
+                    roles_list_str += f"• `{code}` - {info['role_name']}\n"
+
+            if target_coins > 0:
+                roles_list_str += f"\n**Coins:** {target_coins} available\n"
+
+            pending_takes[uid] = {
+                "target_member": target_member,
+                "guild": message.guild,
+                "tradeable_roles": target_tradeable_roles,
+                "target_coins": target_coins,
+                "take_roles": [],
+                "take_coins": 0
+            }
+            
+            await message.reply(
+                f"**Select what you want from {target_member.display_name}:**\n"
+                f"{roles_list_str}\n"
+                f"*Type `!take <code>` for roles or `!takecoins <amount>` for coins.*\n"
+                f"*When done, type `!tradeready`*"
+            )
             return
 
         if content_lower in ["!balance", "!wallet", "!cash"]:
@@ -1440,65 +1306,10 @@ def refresh_tradeable_list():
     for code, info in sorted(tradeable_roles.items()):
         tradeable_listbox.insert(tk.END, f"[{code}] {info['role_name']}")
 
-def gui_add_sellable_role():
-    try:
-        code = sell_code_entry.get().strip()
-        role_id_str = sell_role_id_entry.get().strip()
-        role_name = sell_role_name_entry.get().strip()
-        sell_price_str = sell_price_entry.get().strip()
-        
-        if not all([code, role_id_str, role_name, sell_price_str]):
-            messagebox.showerror("Error", "All fields required.")
-            return
-        
-        role_id = int(role_id_str)
-        sell_price = int(sell_price_str)
-        
-        if code in sellable_roles:
-            messagebox.showerror("Error", f"Code `{code}` exists.")
-            return
-        
-        sellable_roles[code] = {
-            "role_id": role_id,
-            "role_name": role_name,
-            "sell_price": sell_price
-        }
-        save_sellable_roles()
-        
-        sell_code_entry.delete(0, tk.END)
-        sell_role_id_entry.delete(0, tk.END)
-        sell_role_name_entry.delete(0, tk.END)
-        sell_price_entry.delete(0, tk.END)
-        
-        refresh_sellable_list()
-        messagebox.showinfo("Success", f"Added sellable role `{code}`")
-    except ValueError:
-        messagebox.showerror("Error", "Invalid values.")
-
-def gui_remove_sellable_role():
-    try:
-        code = remove_sell_entry.get().strip()
-        if code not in sellable_roles:
-            messagebox.showerror("Error", f"Code `{code}` not found.")
-            return
-        
-        del sellable_roles[code]
-        save_sellable_roles()
-        remove_sell_entry.delete(0, tk.END)
-        refresh_sellable_list()
-        messagebox.showinfo("Success", f"Removed sellable role `{code}`")
-    except Exception as e:
-        messagebox.showerror("Error", str(e))
-
-def refresh_sellable_list():
-    sellable_listbox.delete(0, tk.END)
-    for code, info in sorted(sellable_roles.items()):
-        sellable_listbox.insert(tk.END, f"[{code}] {info['role_name']} - Sell: {info['sell_price']}c")
-
 # Initialize GUI with Scrollable Canvas
 root = tk.Tk()
 root.title("XBot Dashboard")
-root.geometry("600x900")
+root.geometry("600x800")
 
 # Create main frame with scrollbar
 main_frame = tk.Frame(root)
@@ -1679,48 +1490,6 @@ tradeable_listbox = tk.Listbox(list_trade_frame, height=5, font=("Arial", 7))
 tradeable_listbox.pack(fill="both", expand=True, padx=2, pady=2)
 
 refresh_tradeable_list()
-
-# --- SELLABLE ROLES ---
-sellable_frame = tk.LabelFrame(scrollable_frame, text=" Sellable Roles Manager ")
-sellable_frame.pack(fill="both", expand=True, padx=8, pady=3)
-
-add_sell_frame = tk.LabelFrame(sellable_frame, text=" Add Role ", font=("Arial", 8))
-add_sell_frame.pack(fill="x", padx=2, pady=2)
-
-tk.Label(add_sell_frame, text="Code:", font=("Arial", 8)).pack(anchor="w", padx=2)
-sell_code_entry = tk.Entry(add_sell_frame, width=12, font=("Arial", 8))
-sell_code_entry.pack(padx=2, pady=1)
-
-tk.Label(add_sell_frame, text="Role ID:", font=("Arial", 8)).pack(anchor="w", padx=2)
-sell_role_id_entry = tk.Entry(add_sell_frame, width=12, font=("Arial", 8))
-sell_role_id_entry.pack(padx=2, pady=1)
-
-tk.Label(add_sell_frame, text="Role Name:", font=("Arial", 8)).pack(anchor="w", padx=2)
-sell_role_name_entry = tk.Entry(add_sell_frame, width=12, font=("Arial", 8))
-sell_role_name_entry.pack(padx=2, pady=1)
-
-tk.Label(add_sell_frame, text="Sell Price:", font=("Arial", 8)).pack(anchor="w", padx=2)
-sell_price_entry = tk.Entry(add_sell_frame, width=12, font=("Arial", 8))
-sell_price_entry.pack(padx=2, pady=1)
-
-tk.Button(add_sell_frame, text="Add", bg="lightgreen", font=("Arial", 8), command=gui_add_sellable_role).pack(fill="x", padx=2, pady=1)
-
-remove_sell_frame = tk.LabelFrame(sellable_frame, text=" Remove ", font=("Arial", 8))
-remove_sell_frame.pack(fill="x", padx=2, pady=2)
-
-tk.Label(remove_sell_frame, text="Code:", font=("Arial", 8)).pack(anchor="w", padx=2)
-remove_sell_entry = tk.Entry(remove_sell_frame, width=12, font=("Arial", 8))
-remove_sell_entry.pack(padx=2, pady=1)
-
-tk.Button(remove_sell_frame, text="Remove", bg="lightcoral", font=("Arial", 8), command=gui_remove_sellable_role).pack(fill="x", padx=2, pady=1)
-
-list_sell_frame = tk.LabelFrame(sellable_frame, text=" Sellable Roles ", font=("Arial", 8))
-list_sell_frame.pack(fill="both", expand=True, padx=2, pady=2)
-
-sellable_listbox = tk.Listbox(list_sell_frame, height=5, font=("Arial", 7))
-sellable_listbox.pack(fill="both", expand=True, padx=2, pady=2)
-
-refresh_sellable_list()
 
 # --- Utilities ---
 util_frame = tk.LabelFrame(scrollable_frame, text=" Utils ")
