@@ -785,6 +785,124 @@ def start_bot():
         # TRADING SYSTEM - MULTI-ROLE / MULTI-COIN
         # ===================================================
 
+        # Check all trade-related commands BEFORE checking !trade with startswith
+        if content_lower == "!tradeready":
+            if uid not in pending_takes:
+                await message.reply("❌ Run `!trade @user` first.")
+                return
+
+            trade_context = pending_takes[uid]
+            target_member = trade_context["target_member"]
+            guild = trade_context["guild"]
+
+            if not trade_context["take_roles"] and trade_context["take_coins"] == 0:
+                await message.reply("❌ You didn't select anything to take!")
+                return
+
+            initiator_member = guild.get_member(uid)
+            my_tradeable_roles = []
+            for code, trade_info in tradeable_roles.items():
+                role = guild.get_role(trade_info["role_id"])
+                if role and role in initiator_member.roles:
+                    my_tradeable_roles.append((code, role, trade_info))
+
+            my_coins = get_coins(uid)
+
+            if not my_tradeable_roles and my_coins == 0:
+                await message.reply("❌ You have nothing to offer!")
+                del pending_takes[uid]
+                return
+
+            my_roles_str = ""
+            if my_tradeable_roles:
+                my_roles_str += "**Your Roles:**\n"
+                for code, role, info in my_tradeable_roles:
+                    my_roles_str += f"• `{code}` - {info['role_name']}\n"
+
+            if my_coins > 0:
+                my_roles_str += f"\n**Your Coins:** {my_coins} available\n"
+
+            pending_gives[uid] = {
+                "target_member": target_member,
+                "guild": guild,
+                "take_roles": trade_context["take_roles"],
+                "take_coins": trade_context["take_coins"],
+                "my_tradeable_roles": my_tradeable_roles,
+                "my_coins": my_coins,
+                "give_roles": [],
+                "give_coins": 0
+            }
+            del pending_takes[uid]
+
+            await message.reply(
+                f"**Now select what you will give to {target_member.display_name}:**\n"
+                f"{my_roles_str}\n"
+                f"*Type `!give <code>` for roles or `!givecoins <amount>` for coins.*\n"
+                f"*When done, type `!tradeconfirm`*"
+            )
+            return
+
+        if content_lower == "!tradeconfirm":
+            if uid not in pending_gives:
+                await message.reply("❌ Run `!trade @user` first.")
+                return
+
+            context = pending_gives[uid]
+            target_member = context["target_member"]
+            guild = context["guild"]
+
+            if not context["give_roles"] and context["give_coins"] == 0:
+                await message.reply("❌ You didn't select anything to give!")
+                return
+
+            # Convert role codes to role IDs
+            take_role_ids = []
+            for code in context["take_roles"]:
+                if code in tradeable_roles:
+                    take_role_ids.append(tradeable_roles[code]["role_id"])
+
+            give_role_ids = []
+            for code in context["give_roles"]:
+                if code in tradeable_roles:
+                    give_role_ids.append(tradeable_roles[code]["role_id"])
+
+            # Send trade proposal to target
+            initiator_member = guild.get_member(uid)
+            active_trades[target_member.id] = {
+                "initiator_id": uid,
+                "channel_id": message.channel.id,
+                "take_roles": take_role_ids,
+                "give_roles": give_role_ids,
+                "take_coins": context["take_coins"],
+                "give_coins": context["give_coins"],
+                "guild_id": guild.id
+            }
+            del pending_gives[uid]
+
+            take_summary = f"{len(context['take_roles'])} role(s)" if context["take_roles"] else ""
+            if context["take_coins"] > 0:
+                take_summary += f" + {context['take_coins']} coins" if take_summary else f"{context['take_coins']} coins"
+
+            give_summary = f"{len(context['give_roles'])} role(s)" if context["give_roles"] else ""
+            if context["give_coins"] > 0:
+                give_summary += f" + {context['give_coins']} coins" if give_summary else f"{context['give_coins']} coins"
+
+            try:
+                await target_member.send(
+                    f"🔔 **Incoming Trade Request!**\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"👤 **{initiator_member.display_name}** wants to trade with you.\n\n"
+                    f"📤 They will **TAKE**: {take_summary}\n"
+                    f"📥 They will **GIVE**: {give_summary}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"👉 *Type `!agree` to confirm, or `!decline` to cancel.*"
+                )
+                await message.reply(f"✅ Trade proposal sent to **{target_member.display_name}**!")
+            except discord.Forbidden:
+                await message.reply(f"❌ Cannot send DM to **{target_member.display_name}**.")
+                del active_trades[target_member.id]
+            return
+
         if content_lower.startswith("!trade"):
             if not message.mentions:
                 await message.reply("⚠️ Usage: `!trade @user`")
@@ -895,62 +1013,6 @@ def start_bot():
                 await message.reply("❌ Invalid amount.")
             return
 
-        if content_lower == "!tradeready":
-            if uid not in pending_takes:
-                await message.reply("❌ Run `!trade @user` first.")
-                return
-
-            trade_context = pending_takes[uid]
-            target_member = trade_context["target_member"]
-            guild = trade_context["guild"]
-
-            if not trade_context["take_roles"] and trade_context["take_coins"] == 0:
-                await message.reply("❌ You didn't select anything to take!")
-                return
-
-            initiator_member = guild.get_member(uid)
-            my_tradeable_roles = []
-            for code, trade_info in tradeable_roles.items():
-                role = guild.get_role(trade_info["role_id"])
-                if role and role in initiator_member.roles:
-                    my_tradeable_roles.append((code, role, trade_info))
-
-            my_coins = get_coins(uid)
-
-            if not my_tradeable_roles and my_coins == 0:
-                await message.reply("❌ You have nothing to offer!")
-                del pending_takes[uid]
-                return
-
-            my_roles_str = ""
-            if my_tradeable_roles:
-                my_roles_str += "**Your Roles:**\n"
-                for code, role, info in my_tradeable_roles:
-                    my_roles_str += f"• `{code}` - {info['role_name']}\n"
-
-            if my_coins > 0:
-                my_roles_str += f"\n**Your Coins:** {my_coins} available\n"
-
-            pending_gives[uid] = {
-                "target_member": target_member,
-                "guild": guild,
-                "take_roles": trade_context["take_roles"],
-                "take_coins": trade_context["take_coins"],
-                "my_tradeable_roles": my_tradeable_roles,
-                "my_coins": my_coins,
-                "give_roles": [],
-                "give_coins": 0
-            }
-            del pending_takes[uid]
-
-            await message.reply(
-                f"**Now select what you will give to {target_member.display_name}:**\n"
-                f"{my_roles_str}\n"
-                f"*Type `!give <code>` for roles or `!givecoins <amount>` for coins.*\n"
-                f"*When done, type `!tradeconfirm`*"
-            )
-            return
-
         if content_lower.startswith("!give "):
             if uid not in pending_gives:
                 await message.reply("❌ Run `!trade @user` first.")
@@ -999,67 +1061,6 @@ def start_bot():
                 await message.reply(f"✅ Added to offer: {amount} coins")
             except ValueError:
                 await message.reply("❌ Invalid amount.")
-            return
-
-        if content_lower == "!tradeconfirm":
-            if uid not in pending_gives:
-                await message.reply("❌ Run `!trade @user` first.")
-                return
-
-            context = pending_gives[uid]
-            target_member = context["target_member"]
-            guild = context["guild"]
-
-            if not context["give_roles"] and context["give_coins"] == 0:
-                await message.reply("❌ You didn't select anything to give!")
-                return
-
-            # Convert role codes to role IDs
-            take_role_ids = []
-            for code in context["take_roles"]:
-                if code in tradeable_roles:
-                    take_role_ids.append(tradeable_roles[code]["role_id"])
-
-            give_role_ids = []
-            for code in context["give_roles"]:
-                if code in tradeable_roles:
-                    give_role_ids.append(tradeable_roles[code]["role_id"])
-
-            # Send trade proposal to target
-            initiator_member = guild.get_member(uid)
-            active_trades[target_member.id] = {
-                "initiator_id": uid,
-                "channel_id": message.channel.id,
-                "take_roles": take_role_ids,
-                "give_roles": give_role_ids,
-                "take_coins": context["take_coins"],
-                "give_coins": context["give_coins"],
-                "guild_id": guild.id
-            }
-            del pending_gives[uid]
-
-            take_summary = f"{len(context['take_roles'])} role(s)" if context["take_roles"] else ""
-            if context["take_coins"] > 0:
-                take_summary += f" + {context['take_coins']} coins" if take_summary else f"{context['take_coins']} coins"
-
-            give_summary = f"{len(context['give_roles'])} role(s)" if context["give_roles"] else ""
-            if context["give_coins"] > 0:
-                give_summary += f" + {context['give_coins']} coins" if give_summary else f"{context['give_coins']} coins"
-
-            try:
-                await target_member.send(
-                    f"🔔 **Incoming Trade Request!**\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"👤 **{initiator_member.display_name}** wants to trade with you.\n\n"
-                    f"📤 They will **TAKE**: {take_summary}\n"
-                    f"📥 They will **GIVE**: {give_summary}\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"👉 *Type `!agree` to confirm, or `!decline` to cancel.*"
-                )
-                await message.reply(f"✅ Trade proposal sent to **{target_member.display_name}**!")
-            except discord.Forbidden:
-                await message.reply(f"❌ Cannot send DM to **{target_member.display_name}**.")
-                del active_trades[target_member.id]
             return
 
         if content_lower in ["!balance", "!wallet", "!cash"]:
