@@ -52,6 +52,10 @@ user_inventory = {}
 TRADEABLE_ROLES_FILE = "tradeable_roles.json"
 tradeable_roles = {}  # { "001": { "role_id": 123456789, "role_name": "...", "tradeable": True }, ... }
 
+# Sellable Roles
+SELLABLE_ROLES_FILE = "sellable_roles.json"
+sellable_roles = {}  # { "001": { "role_id": 123456789, "role_name": "...", "sell_price": 100 }, ... }
+
 TRADE_STATUS_FILE = "trade_status.json"
 user_trade_settings = {}
 
@@ -65,7 +69,7 @@ PERSONALITY_FILE = "personality.json"
 
 # Load all persistent data
 def load_all_data():
-    global role_shop, user_inventory, user_trade_settings, user_wallets, user_permissions, user_limits, tradeable_roles, BOT_PERSONALITY
+    global role_shop, user_inventory, user_trade_settings, user_wallets, user_permissions, user_limits, tradeable_roles, sellable_roles, BOT_PERSONALITY
     
     if os.path.exists(ROLE_SHOP_FILE):
         try:
@@ -80,6 +84,13 @@ def load_all_data():
                 tradeable_roles = json.load(f)
         except Exception as e:
             print("Failed to load tradeable roles:", e)
+    
+    if os.path.exists(SELLABLE_ROLES_FILE):
+        try:
+            with open(SELLABLE_ROLES_FILE, "r") as f:
+                sellable_roles = json.load(f)
+        except Exception as e:
+            print("Failed to load sellable roles:", e)
     
     if os.path.exists("user_inventory.json"):
         try:
@@ -130,6 +141,13 @@ def save_tradeable_roles():
             json.dump(tradeable_roles, f, indent=2)
     except Exception as e:
         print("Failed to save tradeable roles:", e)
+
+def save_sellable_roles():
+    try:
+        with open(SELLABLE_ROLES_FILE, "w") as f:
+            json.dump(sellable_roles, f, indent=2)
+    except Exception as e:
+        print("Failed to save sellable roles:", e)
 
 def save_user_inventory():
     try:
@@ -426,16 +444,26 @@ def start_bot():
                         return
 
                     try:
+                        # Execute role swap
                         await target_member.remove_roles(take_role, reason="Trade executed.")
                         await target_member.add_roles(give_role, reason="Trade executed.")
                         
                         await initiator.remove_roles(give_role, reason="Trade executed.")
                         await initiator.add_roles(take_role, reason="Trade executed.")
 
+                        # Handle coin transfer if applicable
+                        if trade_data.get("coin_transfer", 0) > 0:
+                            if trade_data.get("coin_direction") == "to_target":
+                                add_coins(target_id, trade_data["coin_transfer"])
+                                add_coins(trade_data["initiator_id"], -trade_data["coin_transfer"])
+                            else:
+                                add_coins(trade_data["initiator_id"], trade_data["coin_transfer"])
+                                add_coins(target_id, -trade_data["coin_transfer"])
+
                         await message.reply(f"✅ Trade complete! You got **{take_role.name}**!")
                         
                         try:
-                            await initiator.send(f"🎉 Trade approved! You got **{take_role.name}**!")
+                            await initiator.send(f"🎉 Trade approved! You got **{give_role.name}**!")
                         except: pass
                         
                         if origin_channel:
@@ -460,6 +488,30 @@ def start_bot():
         LAST_CHANNEL = message.channel
         if hasattr(message.author, 'voice'):
             LAST_USER_VOICE_STATE = message.author.voice
+
+        # ===================================================
+        # SETTINGS COMMAND
+        # ===================================================
+        if content_lower == "!settings":
+            settings_msg = (
+                "⚙️ **YOUR SETTINGS** ⚙️\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "📦 **INVENTORY VISIBILITY:**\n"
+                "`!set inventory public` - Show all roles with codes\n"
+                "`!set inventory anonymous` - Hide role codes\n"
+                "`!set inventory hidden` - Hide inventory completely\n\n"
+                "🔄 **TRADING SETTINGS:**\n"
+                "`!set trading allowed` - Everyone can trade with you\n"
+                "`!set trading disabled` - No one can trade with you\n"
+                "`!set trading friends` - Friends only\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            try:
+                await message.author.send(settings_msg)
+                await message.reply("✅ Settings sent to your DMs!")
+            except:
+                await message.reply("❌ I can't send you DMs. Check your privacy settings.")
+            return
 
         # ===================================================
         # ROLE SHOP SYSTEM
@@ -524,6 +576,64 @@ def start_bot():
                 await message.reply(f"❌ Error: {str(e)}")
             return
 
+        # ===================================================
+        # SELLABLE ROLES SYSTEM
+        # ===================================================
+
+        if content_lower == "!sellroles":
+            if uid not in user_inventory or not user_inventory[uid]:
+                await message.reply("❌ Your inventory is empty.")
+                return
+
+            sellable_owned = []
+            for code, info in user_inventory[uid].items():
+                if code in sellable_roles:
+                    sell_info = sellable_roles[code]
+                    sellable_owned.append(f"**[{code}]** {info['role_name']} - Sell for: **{sell_info['sell_price']} Coins**")
+
+            if not sellable_owned:
+                await message.reply("❌ You have no sellable roles.")
+                return
+
+            roles_str = "\n".join(sellable_owned)
+            await message.reply(
+                f"💰 **YOUR SELLABLE ROLES**\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{roles_str}\n\n"
+                f"*Type `!sell <code>` to sell a role*"
+            )
+            return
+
+        if content_lower.startswith("!sell "):
+            code = content[6:].strip()
+            
+            if uid not in user_inventory or code not in user_inventory[uid]:
+                await message.reply(f"❌ You don't own role `{code}`.")
+                return
+
+            if code not in sellable_roles:
+                await message.reply(f"❌ Role `{code}` is not sellable.")
+                return
+
+            role_info = user_inventory[uid][code]
+            sell_info = sellable_roles[code]
+            sell_price = sell_info["sell_price"]
+
+            try:
+                member = message.guild.get_member(uid)
+                role = message.guild.get_role(role_info["role_id"])
+                if member and role:
+                    await member.remove_roles(role, reason="Sold to shop")
+            except:
+                pass
+
+            add_coins(uid, sell_price)
+            del user_inventory[uid][code]
+            save_user_inventory()
+
+            await message.reply(f"✅ Sold **{role_info['role_name']}** for **{sell_price} Coins**!")
+            return
+
         if content_lower == "!inventory":
             if uid not in user_inventory or not user_inventory[uid]:
                 await message.reply("❌ Your inventory is empty.")
@@ -533,11 +643,12 @@ def start_bot():
             sellable_roles_list = []
 
             for code, info in user_inventory[uid].items():
-                role_str = f"**[{code}]** {info['role_name']} - **{info['price']} Coins**"
-                if info.get("tradeable", False):
+                role_str = f"**[{code}]** {info['role_name']}"
+                if code in tradeable_roles:
                     tradeable_roles_list.append(role_str)
-                if info.get("sellable", False):
-                    sellable_roles_list.append(role_str + f" (Sell for: **{info['price'] // 2} Coins**)")
+                if code in sellable_roles:
+                    sell_price = sellable_roles[code]['sell_price']
+                    sellable_roles_list.append(role_str + f" (Sell for: **{sell_price} Coins**)")
 
             inventory_text = "📦 **YOUR INVENTORY**\n━━━━━━━━━━━━━━━━━━━━━━\n"
 
@@ -550,36 +661,8 @@ def start_bot():
             if not tradeable_roles_list and not sellable_roles_list:
                 inventory_text += "No tradeable or sellable roles.\n"
 
-            inventory_text += f"\n*Use `!trade @user`, `!sell <code>`*"
+            inventory_text += f"\n*Use `!trade @user`, `!sellroles`, `!sell <code>`*"
             await message.reply(inventory_text)
-            return
-
-        if content_lower.startswith("!sell "):
-            code = content[6:].strip()
-            
-            if uid not in user_inventory or code not in user_inventory[uid]:
-                await message.reply(f"❌ You don't own role `{code}`.")
-                return
-
-            role_info = user_inventory[uid][code]
-            if not role_info.get("sellable", False):
-                await message.reply(f"❌ **{role_info['role_name']}** is not sellable.")
-                return
-
-            try:
-                member = message.guild.get_member(uid)
-                role = message.guild.get_role(role_info["role_id"])
-                if member and role:
-                    await member.remove_roles(role, reason="Sold to shop")
-            except:
-                pass
-
-            sell_price = role_info["price"] // 2
-            add_coins(uid, sell_price)
-            del user_inventory[uid][code]
-            save_user_inventory()
-
-            await message.reply(f"✅ Sold **{role_info['role_name']}** for **{sell_price} Coins**!")
             return
 
         # ===================================================
@@ -1115,6 +1198,61 @@ def refresh_tradeable_list():
     for code, info in sorted(tradeable_roles.items()):
         tradeable_listbox.insert(tk.END, f"[{code}] {info['role_name']}")
 
+def gui_add_sellable_role():
+    try:
+        code = sellable_code_entry.get().strip()
+        role_id_str = sellable_role_id_entry.get().strip()
+        role_name = sellable_role_name_entry.get().strip()
+        sell_price_str = sellable_price_entry.get().strip()
+        
+        if not all([code, role_id_str, role_name, sell_price_str]):
+            messagebox.showerror("Error", "All fields required.")
+            return
+        
+        role_id = int(role_id_str)
+        sell_price = int(sell_price_str)
+        
+        if code in sellable_roles:
+            messagebox.showerror("Error", f"Code `{code}` exists.")
+            return
+        
+        sellable_roles[code] = {
+            "role_id": role_id,
+            "role_name": role_name,
+            "sell_price": sell_price
+        }
+        save_sellable_roles()
+        
+        sellable_code_entry.delete(0, tk.END)
+        sellable_role_id_entry.delete(0, tk.END)
+        sellable_role_name_entry.delete(0, tk.END)
+        sellable_price_entry.delete(0, tk.END)
+        
+        refresh_sellable_list()
+        messagebox.showinfo("Success", f"Added sellable role `{code}`")
+    except ValueError:
+        messagebox.showerror("Error", "Invalid values.")
+
+def gui_remove_sellable_role():
+    try:
+        code = remove_sellable_entry.get().strip()
+        if code not in sellable_roles:
+            messagebox.showerror("Error", f"Code `{code}` not found.")
+            return
+        
+        del sellable_roles[code]
+        save_sellable_roles()
+        remove_sellable_entry.delete(0, tk.END)
+        refresh_sellable_list()
+        messagebox.showinfo("Success", f"Removed sellable role `{code}`")
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+def refresh_sellable_list():
+    sellable_listbox.delete(0, tk.END)
+    for code, info in sorted(sellable_roles.items()):
+        sellable_listbox.insert(tk.END, f"[{code}] {info['role_name']} - ${info['sell_price']}")
+
 # Initialize GUI with Scrollable Canvas
 root = tk.Tk()
 root.title("XBot Dashboard")
@@ -1299,6 +1437,48 @@ tradeable_listbox = tk.Listbox(list_trade_frame, height=5, font=("Arial", 7))
 tradeable_listbox.pack(fill="both", expand=True, padx=2, pady=2)
 
 refresh_tradeable_list()
+
+# --- SELLABLE ROLES ---
+sellable_frame = tk.LabelFrame(scrollable_frame, text=" Sellable Roles Manager ")
+sellable_frame.pack(fill="both", expand=True, padx=8, pady=3)
+
+add_sellable_frame = tk.LabelFrame(sellable_frame, text=" Add Role ", font=("Arial", 8))
+add_sellable_frame.pack(fill="x", padx=2, pady=2)
+
+tk.Label(add_sellable_frame, text="Code:", font=("Arial", 8)).pack(anchor="w", padx=2)
+sellable_code_entry = tk.Entry(add_sellable_frame, width=12, font=("Arial", 8))
+sellable_code_entry.pack(padx=2, pady=1)
+
+tk.Label(add_sellable_frame, text="Role ID:", font=("Arial", 8)).pack(anchor="w", padx=2)
+sellable_role_id_entry = tk.Entry(add_sellable_frame, width=12, font=("Arial", 8))
+sellable_role_id_entry.pack(padx=2, pady=1)
+
+tk.Label(add_sellable_frame, text="Role Name:", font=("Arial", 8)).pack(anchor="w", padx=2)
+sellable_role_name_entry = tk.Entry(add_sellable_frame, width=12, font=("Arial", 8))
+sellable_role_name_entry.pack(padx=2, pady=1)
+
+tk.Label(add_sellable_frame, text="Sell Price:", font=("Arial", 8)).pack(anchor="w", padx=2)
+sellable_price_entry = tk.Entry(add_sellable_frame, width=12, font=("Arial", 8))
+sellable_price_entry.pack(padx=2, pady=1)
+
+tk.Button(add_sellable_frame, text="Add", bg="lightgreen", font=("Arial", 8), command=gui_add_sellable_role).pack(fill="x", padx=2, pady=1)
+
+remove_sellable_frame = tk.LabelFrame(sellable_frame, text=" Remove ", font=("Arial", 8))
+remove_sellable_frame.pack(fill="x", padx=2, pady=2)
+
+tk.Label(remove_sellable_frame, text="Code:", font=("Arial", 8)).pack(anchor="w", padx=2)
+remove_sellable_entry = tk.Entry(remove_sellable_frame, width=12, font=("Arial", 8))
+remove_sellable_entry.pack(padx=2, pady=1)
+
+tk.Button(remove_sellable_frame, text="Remove", bg="lightcoral", font=("Arial", 8), command=gui_remove_sellable_role).pack(fill="x", padx=2, pady=1)
+
+list_sellable_frame = tk.LabelFrame(sellable_frame, text=" Sellable Roles ", font=("Arial", 8))
+list_sellable_frame.pack(fill="both", expand=True, padx=2, pady=2)
+
+sellable_listbox = tk.Listbox(list_sellable_frame, height=5, font=("Arial", 7))
+sellable_listbox.pack(fill="both", expand=True, padx=2, pady=2)
+
+refresh_sellable_list()
 
 # --- Utilities ---
 util_frame = tk.LabelFrame(scrollable_frame, text=" Utils ")
